@@ -1,0 +1,1 @@
+This was random decision making when Find any obstacles.

@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Robot Control</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    :root {
+      --primary: #6366f1;
+      --primary-dark: #4f46e5;
+      --primary-light: #a5b4fc;
+      --accent: #8b5cf6;
+      --danger: #ef4444;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --light: #f8fafc;
+      --dark: #0f172a;
+      --dark-light: #1e293b;
+      --gray: #64748b;
+      --gray-light: #e2e8f0;
+      --radius: 16px;
+      --radius-sm: 8px;
+      --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+      --shadow-hover: 0 8px 25px rgba(0, 0, 0, 0.12);
+      --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #f1f5f9, #e2e8f0);
+      color: var(--dark);
+      min-height: 100vh;
+      padding: 2rem;
+      line-height: 1.5;
+    }
+
+    @supports (font-variation-settings: normal) {
+      body { font-family: 'Inter var', sans-serif; }
+    }
+
+    .app-container {
+      max-width: 900px;
+      margin: 0 auto;
+      animation: fadeIn 0.6s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 70px;
+      height: 70px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      border-radius: 50%;
+      margin-bottom: 1rem;
+      box-shadow: var(--shadow);
+    }
+
+    .logo i {
+      color: white;
+      font-size: 2rem;
+    }
+
+    h1 {
+      color: var(--dark);
+      font-weight: 700;
+      font-size: 2.2rem;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .subtitle {
+      color: var(--gray);
+      font-weight: 500;
+      font-size: 1rem;
+    }
+
+    .tabs {
+      display: flex;
+      background: white;
+      border-radius: var(--radius);
+      padding: 0.5rem;
+      margin-bottom: 2rem;
+      box-shadow: var(--shadow);
+    }
+
+    .tab {
+      flex: 1;
+      padding: 0.8rem 1rem;
+      border: none;
+      background: transparent;
+      font-weight: 600;
+      color: var(--gray);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: var(--transition);
+      position: relative;
+      overflow: hidden;
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .tab.active {
+      color: var(--primary-dark);
+      background: rgba(99, 102, 241, 0.1);
+    }
+
+    .tab.active::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 40%;
+      height: 3px;
+      background: var(--primary);
+      border-radius: 3px 3px 0 0;
+    }
+
+    .tab:hover:not(.active) {
+      background: rgba(99, 102, 241, 0.05);
+      color: var(--primary);
+    }
+
+    .content-section {
+      display: none;
+      background: white;
+      padding: 2rem;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      margin-bottom: 2rem;
+      transition: var(--transition);
+    }
+
+    .content-section:hover {
+      box-shadow: var(--shadow-hover);
+    }
+
+    .content-section.active {
+      display: block;
+      animation: fadeInUp 0.5s ease-out;
+    }
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(15px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    h2 {
+      color: var(--dark);
+      font-weight: 700;
+      font-size: 1.5rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    h2 i {
+      color: var(--primary);
+    }
+
+    .form-group {
+      margin-bottom: 1.5rem;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      color: var(--dark);
+      margin-bottom: 0.5rem;
+      font-size: 0.95rem;
+    }
+
+    .input-wrapper {
+      position: relative;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 0.9rem 1rem 0.9rem 2.8rem;
+      border: 1px solid var(--gray-light);
+      border-radius: var(--radius-sm);
+      font-size: 1rem;
+      transition: var(--transition);
+      background-color: #f8fafc;
+    }
+
+    input[type="text"]:focus,
+    input[type="password"]:focus {
+      outline: none;
+      border-color: var(--primary-light);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+      background-color: white;
+    }
+
+    .input-icon {
+      position: absolute;
+      left: 1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--gray);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: white;
+      border: none;
+      padding: 1rem 1.5rem;
+      border-radius: var(--radius-sm);
+      font-weight: 600;
+      font-size: 1rem;
+      cursor: pointer;
+      width: 100%;
+      transition: var(--transition);
+      box-shadow: 0 4px 6px rgba(99, 102, 241, 0.2);
+    }
+
+    .btn:hover {
+      background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+      box-shadow: 0 6px 8px rgba(99, 102, 241, 0.3);
+      transform: translateY(-2px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    /* Controller Styles */
+    .controller-container {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      margin: 2rem 0;
+    }
+
+    .mode-settings {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1rem;
+    }
+
+    .mode-toggle {
+      padding: 1.5rem;
+      border-radius: var(--radius-sm);
+      background: white;
+      border: 2px solid var(--gray-light);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: var(--transition);
+      position: relative;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    }
+
+    .mode-toggle i {
+      font-size: 1.8rem;
+      margin-bottom: 0.8rem;
+      color: var(--primary);
+      transition: var(--transition);
+    }
+
+    .mode-toggle .mode-name {
+      font-weight: 700;
+      margin-bottom: 0.3rem;
+      color: var(--dark);
+      transition: var(--transition);
+    }
+
+    .mode-toggle .mode-state {
+      font-size: 0.85rem;
+      color: var(--gray);
+      transition: var(--transition);
+    }
+
+    .mode-toggle.active {
+      border-color: var(--primary);
+      background: rgba(99, 102, 241, 0.1);
+      box-shadow: 0 4px 6px rgba(99, 102, 241, 0.1);
+    }
+
+    .mode-toggle.active .mode-state {
+      color: var(--success);
+      font-weight: 600;
+    }
+
+    .mode-toggle:hover {
+      border-color: var(--primary-light);
+      transform: translateY(-3px);
+      box-shadow: var(--shadow);
+    }
+
+    .mode-toggle:hover i {
+      color: var(--primary-dark);
+    }
+
+    .mode-toggle .state-indicator {
+      position: absolute;
+      top: 0.8rem;
+      right: 0.8rem;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--gray-light);
+      transition: var(--transition);
+    }
+
+    .mode-toggle.active .state-indicator {
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+    }
+
+    .settings-panel {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1rem;
+      margin-top: 0.5rem;
+    }
+
+    .setting-group {
+      background: white;
+      padding: 1.5rem;
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow);
+      transition: var(--transition);
+    }
+
+    .setting-group:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--shadow-hover);
+    }
+
+    .setting-group label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 1rem;
+      align-items: center;
+    }
+
+    .setting-value {
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--primary);
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 8px;
+      background: var(--gray-light);
+      border-radius: 5px;
+      padding: 0;
+      outline: none;
+      transition: var(--transition);
+    }
+
+    input[type="range"]:hover {
+      background: #d1d5db;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 20px;
+      height: 20px;
+      background: var(--primary);
+      border-radius: 50%;
+      cursor: pointer;
+      transition: var(--transition);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover {
+      background: var(--primary-dark);
+      transform: scale(1.1);
+    }
+
+    .controller {
+      position: relative;
+      width: 100%;
+      max-width: 300px;
+      height: 300px;
+      margin: 2rem auto;
+    }
+
+    .control-btn {
+      position: absolute;
+      width: 70px;
+      height: 70px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      cursor: pointer;
+      box-shadow: var(--shadow);
+      transition: var(--transition);
+      border: none;
+      z-index: 1;
+    }
+
+    .control-btn:hover {
+      background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+      box-shadow: var(--shadow-hover);
+      transform: scale(1.1);
+    }
+
+    .control-btn:active {
+      transform: scale(0.95);
+    }
+
+    .control-btn.up {
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    .control-btn.down {
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    .control-btn.left {
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    .control-btn.right {
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    .control-btn.center {
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: linear-gradient(135deg, var(--gray), #4b5563);
+      width: 80px;
+      height: 80px;
+      font-size: 1.8rem;
+    }
+
+    .control-btn.center:hover {
+      background: linear-gradient(135deg, #4b5563, var(--gray));
+    }
+
+    /* Status Cards */
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 1rem;
+    }
+
+    .status-card {
+      background: white;
+      padding: 1.5rem;
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow);
+      transition: var(--transition);
+    }
+
+    .status-card:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--shadow-hover);
+    }
+
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.8rem 0;
+      border-bottom: 1px solid var(--gray-light);
+    }
+
+    .status-item:last-child {
+      border-bottom: none;
+    }
+
+    .status-label {
+      font-weight: 600;
+      color: var(--gray);
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .status-value {
+      font-weight: 600;
+      color: var(--dark);
+    }
+
+    .connected { color: var(--success); }
+    .disconnected { color: var(--danger); }
+    .warning { color: var(--warning); }
+
+    /* Controller D-pad visualization */
+    .d-pad {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 200px;
+      height: 200px;
+      background: rgba(226, 232, 240, 0.5);
+      border-radius: 50%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .d-pad-inner {
+      width: 150px;
+      height: 150px;
+      background: rgba(255, 255, 255, 0.8);
+      border-radius: 50%;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    }
+
+    .footer {
+      text-align: center;
+      color: var(--gray);
+      font-size: 0.85rem;
+      margin-top: 2rem;
+    }
+
+    @media (max-width: 768px) {
+      body {
+        padding: 1rem;
+      }
+      
+      .tabs {
+        flex-direction: column;
+      }
+      
+      .mode-settings,
+      .settings-panel {
+        grid-template-columns: 1fr;
+      }
+      
+      .content-section {
+        padding: 1.5rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <header>
+      <div class="logo">
+        <i class="fas fa-robot"></i>
+      </div>
+      <h1>ESP32 Robot Control</h1>
+      <p class="subtitle">Advanced control interface for your robotic platform</p>
+    </header>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="wifi">
+        <i class="fas fa-wifi"></i> Wi-Fi
+      </button>
+      <button class="tab" data-tab="control">
+        <i class="fas fa-gamepad"></i> Control
+      </button>
+      <button class="tab" data-tab="status">
+        <i class="fas fa-chart-line"></i> Status
+      </button>
+    </div>
+
+    <!-- Wi-Fi Configuration Section -->
+    <section id="wifi" class="content-section active">
+      <h2><i class="fas fa-wifi"></i> Network Configuration</h2>
+      <form action="/save" method="get">
+        <div class="form-group">
+          <label for="ssid">Network Name (SSID)</label>
+          <div class="input-wrapper">
+            <i class="fas fa-network-wired input-icon"></i>
+            <input type="text" id="ssid" name="ssid" placeholder="Enter your Wi-Fi network name" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <div class="input-wrapper">
+            <i class="fas fa-lock input-icon"></i>
+            <input type="password" id="password" name="password" placeholder="Enter your Wi-Fi password" required>
+          </div>
+        </div>
+        <button type="submit" class="btn">
+          <i class="fas fa-save"></i> Save Configuration
+        </button>
+      </form>
+    </section>
+
+    <!-- Control Section -->
+    <section id="control" class="content-section">
+      <h2><i class="fas fa-robot"></i> Robot Control Panel</h2>
+      
+      <div class="controller-container">
+        <div class="mode-settings">
+          <button class="mode-toggle" id="lineFollowerToggle" onclick="toggleMode(event, 'line')">
+            <i class="fas fa-road"></i>
+            <div class="mode-name">Line Follower</div>
+            <div class="mode-state">OFF</div>
+            <div class="state-indicator"></div>
+          </button>
+          <button class="mode-toggle" id="wallAvoiderToggle" onclick="toggleMode(event, 'wall')">
+            <i class="fas fa-shield-alt"></i>
+            <div class="mode-name">Wall Avoider</div>
+            <div class="mode-state">OFF</div>
+            <div class="state-indicator"></div>
+          </button>
+        </div>
+
+        <div class="settings-panel">
+          <div class="setting-group">
+            <label>
+              <span><i class="fas fa-tachometer-alt"></i> Robot Speed</span>
+              <span class="setting-value" id="speedValue">200</span>
+            </label>
+            <input type="range" id="speedControl" min="50" max="255" value="200" oninput="updateSpeed(this.value)">
+          </div>
+          <div class="setting-group">
+            <label>
+              <span><i class="fas fa-ruler-combined"></i> Avoidance Range</span>
+              <span class="setting-value" id="rangeValue">15 cm</span>
+            </label>
+            <input type="range" id="rangeControl" min="5" max="50" value="15" oninput="updateRange(this.value)">
+          </div>
+        </div>
+
+        <div class="controller">
+          <div class="d-pad">
+            <div class="d-pad-inner"></div>
+          </div>
+          <button class="control-btn up" onclick="sendCmd('/move?dir=forward')">
+            <i class="fas fa-arrow-up"></i>
+          </button>
+          <button class="control-btn down" onclick="sendCmd('/move?dir=reverse')">
+            <i class="fas fa-arrow-down"></i>
+          </button>
+          <button class="control-btn left" onclick="sendCmd('/move?dir=left')">
+            <i class="fas fa-arrow-left"></i>
+          </button>
+          <button class="control-btn right" onclick="sendCmd('/move?dir=right')">
+            <i class="fas fa-arrow-right"></i>
+          </button>
+          <button class="control-btn center" onclick="sendCmd('/move?dir=stop')">
+            <i class="fas fa-stop"></i>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Status Section -->
+    <section id="status" class="content-section">
+      <h2><i class="fas fa-chart-line"></i> System Status</h2>
+      <div class="status-grid">
+        <div class="status-card">
+          <div class="status-item">
+            <span class="status-label"><i class="fas fa-signal"></i> Wi-Fi Status</span>
+            <span class="status-value connected">Connected</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label"><i class="fas fa-network-wired"></i> SSID</span>
+            <span class="status-value">HomeWiFi_5G</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label"><i class="fas fa-wifi"></i> Signal Strength</span>
+            <span class="status-value">Excellent</span>
+          </div>
+        </div>
+        
+        <div class="status-card">
+          <div class="status-item">
+            <span class="status-label"><i class="fas fa-map-marker-alt"></i> IP Address</span>
+            <span class="status-value">192.168.1.100</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label"><i class="fas fa-id-card"></i> MAC Address</span>
+            <span class="status-value">24:0A:C4:12:34:56</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label"><i class="fas fa-memory"></i> Free Memory</span>
+            <span class="status-value">120KB</span>
+          </div>
+        </div>
+        
+        <div class="status-card">
+          <div class="status-item">
+            <span class="status-label"><i class="fas fa-robot"></i> Current Mode</span>
+            <span class="status-value" id="currentModeDisplay">Manual Control</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label"><i class="fas fa-tachometer-alt"></i> Current Speed</span>
+            <span class="status-value" id="currentSpeedDisplay">200</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label"><i class="fas fa-ruler-combined"></i> Avoidance Range</span>
+            <span class="status-value" id="currentRangeDisplay">15 cm</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer">
+      <p>Alpaca ESP32 Robot Control Interface © 2025</p>
+    </div>
+  </div>
+
+  <script>
+    // Tab switching functionality
+    const tabs = document.querySelectorAll('.tab');
+    const sections = document.querySelectorAll('.content-section');
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        // Remove active class from all tabs and sections
+        tabs.forEach(t => t.classList.remove('active'));
+        sections.forEach(s => s.classList.remove('active'));
+        
+        // Add active class to clicked tab and corresponding section
+        tab.classList.add('active');
+        const sectionId = tab.getAttribute('data-tab');
+        document.getElementById(sectionId).classList.add('active');
+      });
+    });
+
+    // Track mode states
+    const modeStates = {
+      line: false,
+      wall: false
+    };
+
+    // Current settings
+    let currentSpeed = 200;
+    let currentRange = 15;
+
+    // Command sending function
+    function sendCmd(url) {
+      // Visual feedback for button press
+      const btn = event.currentTarget;
+      btn.classList.add('active');
+      setTimeout(() => btn.classList.remove('active'), 200);
+      
+      fetch(url)
+        .then(response => response.json())
+        .then(data => {
+          console.log('Command successful:', data);
+          // Update UI based on response if needed
+        })
+        .catch(error => {
+          console.error('Error:', error);
+        });
+    }
+
+    function toggleMode(event, modeType) {
+      event.preventDefault();
+      
+      // Get the toggle element
+	const toggle = document.getElementById(modeType === 'line' ? 'lineFollowerToggle' : 'wallAvoiderToggle');
+      const stateText = toggle.querySelector('.mode-state');
+      const indicator = toggle.querySelector('.state-indicator');
+      
+      // Determine new state (toggle)
+      const newState = !toggle.classList.contains('active');
+      
+      // Update the UI immediately
+      toggle.classList.toggle('active', newState);
+      stateText.textContent = newState ? 'ON' : 'OFF';
+      stateText.style.color = newState ? 'var(--success)' : 'var(--gray)';
+      indicator.style.background = newState ? 'var(--success)' : 'var(--gray-light)';
+      indicator.style.boxShadow = newState ? '0 0 8px var(--success)' : 'none';
+      
+      // If turning on, turn off the other mode
+      if (newState) {
+        const otherMode = modeType === 'line' ? 'wall' : 'line';
+        const otherToggle = document.getElementById(otherMode === 'line' ? 'lineFollowerToggle' : 'wallAvoiderToggle');
+        const otherStateText = otherToggle.querySelector('.mode-state');
+        const otherIndicator = otherToggle.querySelector('.state-indicator');
+        
+        otherToggle.classList.remove('active');
+        otherStateText.textContent = 'OFF';
+        otherStateText.style.color = 'var(--gray)';
+        otherIndicator.style.background = 'var(--gray-light)';
+        otherIndicator.style.boxShadow = 'none';
+        
+        // Send command to turn off the other mode
+        sendCommand(otherMode, false);
+      }
+      
+      // Send command for the current mode
+      sendCommand(modeType, newState);
+      
+      // Update current mode display
+      document.getElementById('currentModeDisplay').textContent = 
+        newState ? 
+          (modeType === 'line' ? 'Line Follower' : 'Wall Avoider') : 
+          'Manual Control';
+    }
+	
+	    function sendCommand(modeType, active) {
+      const url = `/${modeType}?active=${active ? '1' : '0'}`;
+      
+      fetch(url)
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('Network response was not ok');
+          }
+          return response.json();
+        })
+        .then(data => {
+          console.log(`${modeType} mode ${active ? 'activated' : 'deactivated'} successfully:`, data);
+        })
+        .catch(error => {
+          console.error(`Error ${active ? 'activating' : 'deactivating'} ${modeType} mode:`, error);
+          // Revert UI if the command failed
+          const toggle = document.getElementById(modeType === 'line' ? 'lineFollowerToggle' : 'wallAvoiderToggle');
+          const stateText = toggle.querySelector('.mode-state');
+          const indicator = toggle.querySelector('.state-indicator');
+          
+          toggle.classList.toggle('active', !active);
+          stateText.textContent = active ? 'OFF' : 'ON';
+          stateText.style.color = active ? 'var(--gray)' : 'var(--success)';
+          indicator.style.background = active ? 'var(--gray-light)' : 'var(--success)';
+          indicator.style.boxShadow = active ? 'none' : '0 0 8px var(--success)';
+          
+          alert(`Failed to ${active ? 'activate' : 'deactivate'} ${modeType} mode. Please try again.`);
+        });
+    }
+
+
+    // Update speed setting
+    function updateSpeed(value) {
+      currentSpeed = value;
+      document.getElementById('speedValue').textContent = value;
+      document.getElementById('currentSpeedDisplay').textContent = value;
+      sendCmd(`/speed?value=${value}`);
+    }
+
+    // Update avoidance range setting
+    function updateRange(value) {
+      currentRange = value;
+      document.getElementById('rangeValue').textContent = `${value} cm`;
+      document.getElementById('currentRangeDisplay').textContent = `${value} cm`;
+      sendCmd(`/distance?value=${value}`);
+    }
+
+    // Check initial states when page loads
+    document.addEventListener('DOMContentLoaded', function() {
+      // In a real implementation, you would fetch these from the ESP32
+      // For now, we'll initialize with defaults
+      modeStates.line = false;
+      modeStates.wall = false;
+      currentSpeed = 200;
+      currentRange = 15;
+      
+      // Update UI with initial values
+      document.getElementById('speedValue').textContent = currentSpeed;
+      document.getElementById('rangeValue').textContent = `${currentRange} cm`;
+      document.getElementById('currentSpeedDisplay').textContent = currentSpeed;
+      document.getElementById('currentRangeDisplay').textContent = `${currentRange} cm`;
+      
+      // You would replace this with actual API calls to your ESP32:
+      /*
+      fetch('/getLineState')
+        .then(response => response.json())
+        .then(data => {
+          modeStates.line = data.active;
+          if (modeStates.line) {
+            const toggle = document.getElementById('lineToggle');
+            toggle.classList.add('active');
+            toggle.querySelector('.mode-state').textContent = 'ON';
+            document.getElementById('currentModeDisplay').textContent = 'Line Follower';
+          }
+        });
+      
+      fetch('/getWallState')
+        .then(response => response.json())
+        .then(data => {
+          modeStates.wall = data.active;
+          if (modeStates.wall) {
+            const toggle = document.getElementById('wallToggle');
+            toggle.classList.add('active');
+            toggle.querySelector('.mode-state').textContent = 'ON';
+            document.getElementById('currentModeDisplay').textContent = 'Wall Avoider';
+          }
+        });
+
+      fetch('/getSpeed')
+        .then(response => response.json())
+        .then(data => {
+          currentSpeed = data.speed;
+          document.getElementById('speedControl').value = currentSpeed;
+          document.getElementById('speedValue').textContent = currentSpeed;
+          document.getElementById('currentSpeedDisplay').textContent = currentSpeed;
+        });
+
+      fetch('/getRange')
+        .then(response => response.json())
+        .then(data => {
+          currentRange = data.range;
+          document.getElementById('rangeControl').value = currentRange;
+          document.getElementById('rangeValue').textContent = `${currentRange} cm`;
+          document.getElementById('currentRangeDisplay').textContent = `${currentRange} cm`;
+        });
+      */
+    });
+  </script>
+</body>
+</html>

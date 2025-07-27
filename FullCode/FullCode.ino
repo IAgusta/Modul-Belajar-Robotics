@@ -59,7 +59,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 ==================== NET Handlers ======================
 */
 const char* url = "https://alpaca-labs.online"; // Website Url Change if the website domain changes
-const char* apiKey = "UzalZNU3vJ76NLfwK4VgupaVNDaFv3xl"; // Change this based on your API Key
+const char* apiKey = "UzalZNU3vJ76NXXXXXXXXXXXXXXXX"; // Change this based on your API Key
 // Dont change this path url
 String getUrl = String(url) + "/api/robot/command/" + apiKey;
 String postUrl = String(url) + "/api/robot/command-status/" + apiKey;
@@ -80,14 +80,10 @@ bool softAPStarted = false;
 bool wasEverConnected = false;
 // Connection Settings, try to connect difference connection if the above is fail
 String ssidList[MAX_NETWORKS] = {
-  "MSI 5916",
-  "OZARA ATHIRA",
-  "Redmi Note 7"
+  "YOUR_SSID"
 };
 String passwordList[MAX_NETWORKS] = {
-  "msimodern",
-  "Eri979669",
-  "yunitamuhtya"
+  "YOUR_PASSWORD"
 };
 int ssidCount = 3;
 Preferences preferences;

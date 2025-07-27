@@ -99,18 +99,16 @@ AsyncWebServer server(80); // ESP32 Webserver on Port 80
 int BASE_SPEED      = 200;   // forward PWM 0-255
 const int LOST_TIMEOUT_MS = 2000;  // max time to search
 const byte FINISH_PATTERN = 0b11111;  // all sensors on finish line
-const int OBSTACLE_DISTANCE = 15;  // obstacle threshold in cm
-const int AVOIDANCE_DELAY = 500;   // avoidance maneuver time
-// PID Variable
 int   lastError = 0;          // for remembering direction
 bool  finished  = false;      // true when finish line detected
 unsigned long lostStart = 0;  // time when line disappeared
 int prevError = 0;   // for crude derivative
 float integral = 0; // Integral term
-// PID Value
 float KP = 0.15;  
 float KD = 0.9;
 float KI = 0.0005;
+bool          lastWasLeft  = false;   // true = last correction was left
+bool          lineWasLost  = false;
 
 int avoidRange = 15; // Default Range
 
@@ -121,6 +119,7 @@ int rightDistance, leftDistance;
 
 unsigned long lastSensorDisplay = 0;
 const unsigned long sensorDisplayInterval = 250;
+int AVOIDANCE_DELAY = 1000;
 
 // Servo Adjustment
 Servo servo;
@@ -130,7 +129,7 @@ int rightAngle = 180; // Angle for servo to right
 int currentAngle = 0;
 
 bool lineFollowerActive = false;   // default Black Line on White Space
-bool WhiteLineActive  = false;     // White Line on Black Space
+bool reverseLine = false;   // Reserve the Reading Sensor
 bool wallAvoiderActive = false;    // Wall Avoider
 bool avoidingObstacle = false; 
 
@@ -215,10 +214,66 @@ void updateOLEDStatus(bool showAudio = true) {
 }
 
 // ======== MOVEMENT AUDIO (randomized) ========
-int playKiri() { int track = random(9, 10); DFPlayer.play(track); return track; }
-int playKanan() { int track = random(11, 12); DFPlayer.play(track); return track; }
-int playMaju() { int track = random(13, 14); DFPlayer.play(track); return track; }
-int playMundur() { int track = random(15, 16); DFPlayer.play(track); return track; }
+struct AudioCommand {
+  String label;
+  int track;
+  unsigned long timestamp;
+};
+
+AudioCommand currentAudio = {"None", 0, 0};
+AudioCommand pendingAudio = {"None", 0, 0};
+bool audioPlaying = false;
+unsigned long audioStartTime = 0;
+const unsigned long MAX_AUDIO_DURATION = 2000; // Max 2 seconds per audio
+String lastDirection = "";
+
+int playKiri() {
+  int track = random(9, 10);
+  DFPlayer.play(track); 
+  return track;
+}
+
+int playKiriAsync() { 
+  int track = random(9, 10); 
+  queueDirectionAudio("Left", track);
+  return track; 
+}
+
+int playKanan() { 
+  int track = random(11, 12); 
+  DFPlayer.play(track); 
+  return track; 
+}
+
+int playKananAsync() { 
+  int track = random(11, 12); 
+  queueDirectionAudio("Right", track);
+  return track; 
+}
+
+int playMaju() {
+  int track = random(13, 14); 
+  DFPlayer.play(track); 
+  return track; 
+}
+
+int playMajuAsync() { 
+  int track = random(13, 14); 
+  queueDirectionAudio("Forward", track);
+  return track; 
+}
+
+int playMundur() { 
+  int track = random(15, 16); 
+  DFPlayer.play(track); 
+  return track; 
+}
+
+int playMundurAsync() { 
+  int track = random(15, 16); 
+  queueDirectionAudio("Reverse", track);
+  return track; 
+}
 
 // Sound FX Wrappers
 void playConnected()      { playSFX("Connected", 17); }
@@ -234,6 +289,49 @@ void playGoodnight()      { playSFX("Goodnight", 26); }
 void playReboot()         { playSFX("Reboot", 27); }
 void playYeehaw()         { playSFX("Yeehaw", 28); }
 void playYouAreGreat()    { playSFX("You Are Great", 29); }
+
+void queueDirectionAudio(const String& label, int track) {
+  // If same direction, don't queue new audio
+  if (label == lastDirection && audioPlaying) {
+    return;
+  }
+  
+  // Queue new audio (will interrupt current if different direction)
+  pendingAudio.label = label;
+  pendingAudio.track = track;
+  pendingAudio.timestamp = millis();
+  lastDirection = label;
+}
+
+void manageAsyncAudio() {
+  unsigned long now = millis();
+  
+  // Check if we have pending audio
+  if (pendingAudio.label != "None") {
+    // If no audio playing, or different direction, start new audio
+    if (!audioPlaying || pendingAudio.label != currentAudio.label) {
+      // Start new audio
+      DFPlayer.play(pendingAudio.track);
+      currentAudio = pendingAudio;
+      audioPlaying = true;
+      audioStartTime = now;
+      
+      // Update OLED
+      oledAudio = currentAudio.label + " (" + String(currentAudio.track) + ")";
+      updateOLEDStatus();
+    }
+    
+    // Clear pending
+    pendingAudio = {"None", 0, 0};
+  }
+  
+  // Check if current audio should timeout (safety mechanism)
+  if (audioPlaying && (now - audioStartTime > MAX_AUDIO_DURATION)) {
+    audioPlaying = false;
+    currentAudio = {"None", 0, 0};
+    lastDirection = "";
+  }
+}
 
 // Direction Play main SFX with random track
 int playSFX(const String& label, int trackMin, int trackMax) {
@@ -267,31 +365,52 @@ void setColor(bool red, bool green, bool blue) {
 /* ----------  LINE FOLLOWING FUNCTIONS (BFD-1000)  ---------- */
 int readSensors() {
   int bits = 0;
-  bits |= (!digitalRead(irLeft2))  << 4;   // bit4  (TCRT-5000 remove '!'")
-  bits |= (!digitalRead(irLeft1))  << 3;   // bit3  (TCRT-5000 remove '!'")
-  bits |= (!digitalRead(irCenter)) << 2;   // bit2  (TCRT-5000 remove '!'")
-  bits |= (!digitalRead(irRight1)) << 1;   // bit1  (TCRT-5000 remove '!'")
-  bits |= (!digitalRead(irRight2));        // bit0  (TCRT-5000 remove '!'")
+  if (reverseLine){
+    bits |= (digitalRead(irLeft2))  << 4;   // bit4
+    bits |= (digitalRead(irLeft1))  << 3;   // bit3
+    bits |= (digitalRead(irCenter)) << 2;   // bit2
+    bits |= (digitalRead(irRight1)) << 1;   // bit1
+    bits |= (digitalRead(irRight2));        // bit0
+  } else {
+    bits |= (!digitalRead(irLeft2))  << 4;   // bit4
+    bits |= (!digitalRead(irLeft1))  << 3;   // bit3
+    bits |= (!digitalRead(irCenter)) << 2;   // bit2
+    bits |= (!digitalRead(irRight1)) << 1;   // bit1
+    bits |= (!digitalRead(irRight2));        // bit0
+  }
   return bits;                             // 0bxxxxx  (5 bits)
 }
 
-void followLine(int pattern) {
-  // Display sensor values every interval
-  if (millis() - lastSensorDisplay > sensorDisplayInterval) {
-    lastSensorDisplay = millis();
-
-    lcd.setCursor(0, 0); lcd.print("Sensor:");
-    lcd.setCursor(0, 1);
-    for (int i = 4; i >= 0; i--) {         // print 5 bits
-      lcd.print((pattern >> i) & 1 ? 'O' : 'X');
-    }
+/* ----------  LCD LINE PATERN DISPLAY  ---------- */
+void displayLCD(int pattern) {
+  lcd.setCursor(0, 0);
+  // Add full movement description
+  switch (pattern) {
+    case 0b00100: lcd.print(F("FORWARD")); break;
+    case 0b00110:
+    case 0b00111:
+    case 0b00011: lcd.print(F("RIGHT")); break;
+    case 0b01100:
+    case 0b11100:
+    case 0b11000: lcd.print(F("LEFT")); break;
+    case 0b00000:
+    case 0b11111: lcd.print(F("LINE LOST")); break;
+    default: lcd.print(F("             ")); break;
   }
 
+  lcd.setCursor(0, 1);
+  for (int i = 4; i >= 0; i--) {
+    lcd.print((pattern >> i) & 1 ? "[O]" : "[X]");
+  }
+}
+
+
+void followLine(int pattern) {
   /* 1.  FINISH LINE  */
   if (pattern == FINISH_PATTERN) {
     finished = true;
     handleStop();
-    lcd.setCursor(0, 1);
+    lcd.setCursor(0, 0);
     lcd.print(F("FINISHED!"));
     return;
   }
@@ -315,11 +434,12 @@ void followLine(int pattern) {
     lineFound = true;
   }
 
-  // Override for hard turns
+  // Override for hard turns (optional but useful)
   if (pattern == 0b10000) error = -4;
   if (pattern == 0b00001) error = 4;
   if (pattern == 0b11000) error = -3;
   if (pattern == 0b00011) error = 3;
+
 
   if (lineFound) {
     lostStart = 0;
@@ -332,7 +452,7 @@ void followLine(int pattern) {
     prevError  = error;                                   // store for next loop
     int left   = BASE_SPEED + diff;
     int right  = BASE_SPEED - diff;
-    driveMotors(left, right, error);
+    driveMotors(left, right, error); // Pass error to driveMotors
     return;
   }
 
@@ -340,16 +460,17 @@ void followLine(int pattern) {
   if (lostStart == 0) lostStart = millis();
 
   if (millis() - lostStart < LOST_TIMEOUT_MS) {
-    /* continue the last turn direction */
+    /* continue the last turn direction with same base speed */
     int diff = (lastError >= 0) ? KP : -KP;
     int left  = BASE_SPEED + diff;
     int right = BASE_SPEED - diff;
-    driveMotors(left, right, lastError);
+    driveMotors(left, right, lastError); // Pass lastError to driveMotors
   } else {
     handleStop();
   }
 }
 
+/* ----------  MOTOR DRIVER  ---------- */
 void driveMotors(int leftPWM, int rightPWM, int error) {
   leftPWM  = constrain(leftPWM, 0, 255);
   rightPWM = constrain(rightPWM, 0, 255);
@@ -379,40 +500,88 @@ void driveMotors(int leftPWM, int rightPWM, int error) {
   }
 }
 
+enum UltrasonicState {
+  ULTRASONIC_IDLE,
+  ULTRASONIC_TRIGGERED,
+  ULTRASONIC_MEASURING
+};
+
+UltrasonicState ultrasonicState = ULTRASONIC_IDLE;
+unsigned long triggerTime = 0;
+unsigned long echoStartTime = 0;
+int lastDistance = -1;
+
 // Function to calculate distance
 int getDistance() {
+  switch (ultrasonicState) {
+    case ULTRASONIC_IDLE:
+      // Start measurement
+      digitalWrite(TrigPin, LOW);
+      delayMicroseconds(2);
+      digitalWrite(TrigPin, HIGH);
+      delayMicroseconds(10);
+      digitalWrite(TrigPin, LOW);
+      triggerTime = millis();
+      ultrasonicState = ULTRASONIC_TRIGGERED;
+      return lastDistance; // Return previous value
+      
+    case ULTRASONIC_TRIGGERED:
+      // Wait for echo to start
+      if (digitalRead(EchoPin) == HIGH) {
+        echoStartTime = micros();
+        ultrasonicState = ULTRASONIC_MEASURING;
+      } else if (millis() - triggerTime > 30) {
+        // Timeout - no echo received
+        ultrasonicState = ULTRASONIC_IDLE;
+        lastDistance = -1;
+      }
+      return lastDistance;
+      
+    case ULTRASONIC_MEASURING:
+      // Wait for echo to end
+      if (digitalRead(EchoPin) == LOW) {
+        unsigned long duration = micros() - echoStartTime;
+        lastDistance = duration * 0.034 / 2;
+        ultrasonicState = ULTRASONIC_IDLE;
+      } else if (micros() - echoStartTime > 30000) {
+        // Timeout - echo too long
+        ultrasonicState = ULTRASONIC_IDLE;
+        lastDistance = -1;
+      }
+      return lastDistance;
+  }
+  return lastDistance;
+}
+
+// For Checking Wall on Right or Left (why not use getDistance? because it have debounce time for make it return value -1)
+int blockingGetDistance() {
   digitalWrite(TrigPin, LOW);
   delayMicroseconds(2);
   digitalWrite(TrigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(TrigPin, LOW);
-  duration = pulseIn(EchoPin, HIGH);
-  distance = duration * 0.034 / 2;
-  return distance;
-}
 
-enum WallAvoiderState {
-  WA_DRIVE,
-  WA_BACK,
-  WA_TURN,
-  WA_DELAY
-};
+  unsigned long duration = pulseIn(EchoPin, HIGH, 30000); // 30 ms timeout
+  return (duration > 0) ? duration * 0.034 / 2 : -1;
+}
 
 void handleObstacle(int avoidRange) {
   if (!wallAvoiderActive) return;
   
+  handleStop();
+
   avoidingObstacle = true;
   servo.attach(servoPin);
   
   // --- SCAN LEFT ---
   servo.write(leftAngle);
-  delay(400);
-  int leftDist = getDistance();
-
+  delay(500);
+  int leftDist = blockingGetDistance();
+  delay(200);
   // --- SCAN RIGHT ---
   servo.write(rightAngle);
-  delay(400);
-  int rightDist = getDistance();
+  delay(500);
+  int rightDist = blockingGetDistance();
 
   // --- RETURN TO CENTER ---
   servo.write(middleAngle);
@@ -429,8 +598,10 @@ void handleObstacle(int avoidRange) {
   // ---- AVOIDANCE MANEUVER ----
   if (leftDist > rightDist) {
     avoidLeft(lineFollowerActive);
+    lcd.setCursor(0, 1); lcd.print(F("Belok Kiri"));
   } else {
     avoidRight(lineFollowerActive);
+    lcd.setCursor(0, 1); lcd.print(F("Belok Kanan"));
   }
   
   avoidingObstacle = false;
@@ -441,59 +612,91 @@ void avoidLeft(bool findLine) {
   handleReverse();
   delay(500);
   
+  if (!findLine) {
+    int track = -1;
+    track = playSFX("Left", 9, 10);
+  }
   // Turn left
-  handleLeft();
+  digitalWrite(motor1Pin1, LOW);
+  digitalWrite(motor1Pin2, LOW);
+  digitalWrite(motor2Pin1, LOW);
+  digitalWrite(motor2Pin2, HIGH);
+  ledcWrite(enable1Pin, 200);
+  ledcWrite(enable2Pin, 200);
   delay(AVOIDANCE_DELAY);
-  
+  // Wait A bit
+  handleStop();
+  delay(300);
   // Move forward
   handleForward();
   delay(AVOIDANCE_DELAY * 1.5);
   
-  // Turn right
-  handleRight();
-  delay(AVOIDANCE_DELAY);
-  
-  // Try to find line if in line following mode
+  // Back And Try to find line if in line following mode
   if (findLine) {
+    // Turn right
+    digitalWrite(motor1Pin1, LOW);
+    digitalWrite(motor1Pin2, HIGH);
+    digitalWrite(motor2Pin1, LOW);
+    digitalWrite(motor2Pin2, LOW);
+    ledcWrite(enable1Pin, 200);
+    ledcWrite(enable2Pin, 200);
+    delay(AVOIDANCE_DELAY);
+
     unsigned long start = millis();
     while (millis() - start < 3000) {
       int pattern = readSensors();
       if (pattern != 0b00000) break;
       handleForward();
     }
+
+    handleStop();
   }
-  
-  handleStop();
 }
 
 void avoidRight(bool findLine) {
   // Back up slightly
   handleReverse();
-  delay(400);
+  delay(500);
   
+  if (!findLine) {
+    int track = -1;
+    track = playSFX("Right", 11, 12);
+  }
   // Turn right
-  handleRight();
+  digitalWrite(motor1Pin1, LOW);
+  digitalWrite(motor1Pin2, HIGH);
+  digitalWrite(motor2Pin1, LOW);
+  digitalWrite(motor2Pin2, LOW);
+  ledcWrite(enable1Pin, 200);
+  ledcWrite(enable2Pin, 200);
   delay(AVOIDANCE_DELAY);
-  
+  // Wait A bit
+  handleStop();
+  delay(300);
   // Move forward
   handleForward();
   delay(AVOIDANCE_DELAY * 1.5);
   
-  // Turn left
-  handleLeft();
-  delay(AVOIDANCE_DELAY);
-  
-  // Try to find line if in line following mode
+  // Back Try to find line if in line following mode
   if (findLine) {
+    // Turn left
+    digitalWrite(motor1Pin1, LOW);
+    digitalWrite(motor1Pin2, LOW);
+    digitalWrite(motor2Pin1, LOW);
+    digitalWrite(motor2Pin2, HIGH);
+    ledcWrite(enable1Pin, 200);
+    ledcWrite(enable2Pin, 200);
+    delay(AVOIDANCE_DELAY);
+
+    // Search Line
     unsigned long start = millis();
     while (millis() - start < 3000) {
       int pattern = readSensors();
       if (pattern != 0b00000) break;
       handleForward();
     }
+    handleStop();
   }
-  
-  handleStop();
 }
 
 void indicateWiFiStatus(bool connected, bool softAP) {
@@ -514,24 +717,40 @@ void indicateWiFiStatus(bool connected, bool softAP) {
   }
 }
 
-void checkingConnection(){
-  // Check Wi-Fi connection periodically
+void checkingConnectionOptimized(){
+  // Only check WiFi when not actively line following or much less frequently
+  if (lineFollowerActive) {
+    // Check much less frequently when line following (every 30 seconds)
+    static unsigned long lastWiFiCheckLineMode = 0;
+    if (millis() - lastWiFiCheckLineMode > 30000) {
+      lastWiFiCheckLineMode = millis();
+      
+      // Quick check without delays
+      if (WiFi.status() != WL_CONNECTED && !softAPStarted) {
+        // Don't do full reconnection during line following
+        // Just note the disconnection
+        wasEverConnected = false;
+      }
+    }
+    return;
+  }
+  
+  // Original logic when not line following
   if (millis() - lastWiFiCheck > wifiCheckInterval) {
     lastWiFiCheck = millis();
     if (WiFi.status() != WL_CONNECTED && !softAPStarted) {
       if (wasEverConnected) {
-        playDisconnecto();  // Only play sound if it was connected before
+        playDisconnecto();
       }
-      lcd.clear(); lcd.setCursor(0, 0); lcd.print("WiFi Lost");
-      lcd.setCursor(0, 1); lcd.print("Switching to AP");
-      displayOLED("WiFi Lost", "Switching to AP");
+      lcd.clear(); lcd.setCursor(0, 0); lcd.print("WiFi Terputus");
+      lcd.setCursor(0, 1); lcd.print("Mulai SoftAP");
+      displayOLED("WiFi Terputus", "Mulai SoftAP");
       setColor(false, false, true);
       WiFi.disconnect(true);
       delay(1000);
       startSoftAPConfig();
       softAPStarted = true;
     } else {
-      // Optionally, reconnect if the connection is lost
       if (WiFi.status() != WL_CONNECTED) {
         WiFi.reconnect();
       }
@@ -597,7 +816,7 @@ void startSoftAPConfig() {
   WiFi.softAP("ESP32_Config");
   IPAddress IP = WiFi.softAPIP();
   lcd.clear();
-  lcd.setCursor(0, 0); lcd.print("SoftAP Mode");
+  lcd.setCursor(0, 0); lcd.print("Mode SoftAP");
   lcd.setCursor(0, 1); lcd.print(IP);
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -652,7 +871,7 @@ void proxyConnection(){
   // /move?dir=forward|backward|left|right|stop
   server.on("/move", HTTP_GET, [](AsyncWebServerRequest *request) {
     String dir = request->getParam("dir") ? request->getParam("dir")->value() : "stop";
-    moveRobot(dir);
+    moveRobotAsync(dir);
     oledCommand = dir;
     oledAudio = "Move" + dir;
     updateOLEDStatus();
@@ -662,9 +881,26 @@ void proxyConnection(){
 
   // /line?active=1|0
   server.on("/line", HTTP_GET, [](AsyncWebServerRequest *request) {
-    bool active = request->getParam("active") && request->getParam("active")->value() == "1";
-    setLineFollower(active);
-    request->send(200, "application/json", "{\"result\": \"ok\", \"line_active\": " + String(active ? "true" : "false") + "}");
+    // Only set active if the parameter is provided
+    if (request->hasParam("active")) {
+      bool active = request->getParam("active")->value() == "1";
+      setLineFollower(active);
+    }
+    
+    // Only set reverse if the parameter is provided
+    if (request->hasParam("reverse")) {
+      bool reverse = request->getParam("reverse")->value() == "1";
+      setLineReverse(reverse);
+    }
+
+    // Respond with current states (not the parameters)
+    String response = "{\"result\":\"ok\", \"line_active\":";
+    response += (lineFollowerActive ? "true" : "false");
+    response += ", \"reverse\":";
+    response += (reverseLine ? "true" : "false");
+    response += "}";
+
+    request->send(200, "application/json", response);
   });
 
   // /wall?active=1|0
@@ -727,25 +963,81 @@ void proxyConnection(){
 /*
 ==========================* API HANDLERS *==========================
 */
-void fetchCommandFromAPI() {
+
+enum APIState {
+  API_IDLE,
+  API_REQUESTING,
+  API_PROCESSING
+};
+
+APIState apiState = API_IDLE;
+HTTPClient apiHttp;
+unsigned long apiStartTime = 0;
+String pendingCommand = "";
+
+void fetchCommandFromAPIAsync() {
   if (WiFi.status() != WL_CONNECTED) return;
-
-  HTTPClient http;
-  http.begin(getUrl);
-  int httpCode = http.GET();
-
-  if (httpCode == 200) {
-    String payload = http.getString();
-    DynamicJsonDocument doc(512);
-    DeserializationError error = deserializeJson(doc, payload);
-    if (error) return;
-
-    JsonObject command = doc["command"];
-    handleAPICommand(command); // Pass the whole JSON object
-
-    sendCommandStatus(1);  // Acknowledge command
+  
+  switch (apiState) {
+    case API_IDLE:
+      // Start new request only if it's time
+      if (millis() - lastFetch > fetchInterval) {
+        apiHttp.begin(getUrl);
+        apiHttp.setTimeout(1000); // 1 second timeout
+        
+        // Start the request
+        int httpCode = apiHttp.GET();
+        
+        if (httpCode > 0) {
+          apiState = API_REQUESTING;
+          apiStartTime = millis();
+        } else {
+          apiHttp.end();
+        }
+        lastFetch = millis();
+      }
+      break;
+      
+    case API_REQUESTING:
+      // Check if response is ready or timeout
+      if (millis() - apiStartTime > 1000) {
+        // Timeout
+        apiHttp.end();
+        apiState = API_IDLE;
+      } else {
+        // Try to get response
+        int size = apiHttp.getSize();
+        if (size > 0 || !apiHttp.connected()) {
+          if (size > 0) {
+            pendingCommand = apiHttp.getString();
+            apiState = API_PROCESSING;
+          } else {
+            apiHttp.end();
+            apiState = API_IDLE;
+          }
+        }
+      }
+      break;
+      
+    case API_PROCESSING:
+      // Process the command (this should be fast)
+      if (pendingCommand.length() > 0) {
+        DynamicJsonDocument doc(512);
+        DeserializationError error = deserializeJson(doc, pendingCommand);
+        
+        if (!error) {
+          JsonObject command = doc["command"];
+          handleAPICommand(command);
+          sendCommandStatus(1); // Quick acknowledgment
+        }
+        
+        pendingCommand = "";
+      }
+      
+      apiHttp.end();
+      apiState = API_IDLE;
+      break;
   }
-  http.end();
 }
 
 void sendCommandStatus(int statusCode) {
@@ -784,12 +1076,18 @@ void handleAPICommand(JsonObject command) {
 
   if (action == "forward" || action == "backward" || action == "reverse" || 
       action == "left" || action == "right" || action == "stop") {
-    moveRobot(action); // existing function
+    moveRobotAsync(action); // existing function
   }
 
   else if (action == "line") {
     bool status = command["status"];
     setLineFollower(status);
+
+    // OPTIONAL: check and apply reverse if provided
+    if (command.containsKey("reverse")) {
+      bool reverse = command["reverse"];
+      setLineReverse(reverse);
+    }
   }
 
   else if (action == "wall") {
@@ -855,6 +1153,31 @@ void moveRobot(String dir) {
   }
 }
 
+void moveRobotAsync(String dir) {
+  oledCommand = dir;
+
+  if (dir == "forward") {
+    playMajuAsync();
+    handleForward();
+  } else if (dir == "left") {
+    playKiriAsync();
+    handleLeft();
+  } else if (dir == "right") {
+    playKananAsync();
+    handleRight();
+  } else if (dir == "reverse" || dir == "backward") {
+    playMundurAsync();
+    handleReverse();
+  } else {
+    // For stop/unknown commands, play immediately (not queued)
+    playSFX("Ugh", 19, 19);
+    handleStop();
+    audioPlaying = false; // Stop direction audio
+    lastDirection = "";
+    return;
+  }
+}
+
 // Proxy Mode : LineFolower
 void setLineFollower(bool active) {
   // Enable/disable line follower mode
@@ -864,6 +1187,14 @@ void setLineFollower(bool active) {
   if (!active) {
     handleStop();
   }
+}
+
+void setLineReverse(bool reverse) {
+  reverseLine = reverse;
+  lcd.clear();
+  lcd.print("Line");
+  lcd.print(reverse ? "-R:" : ":");
+  lcd.print(lineFollowerActive ? "ON" : "OFF");
 }
 
 // Proxy Mode : WallAvoider
@@ -995,32 +1326,42 @@ void setup() {
 }
 
 void loop() {
-  // 1. Wall avoidance has priority
+  // 0. Manage async audio
+  manageAsyncAudio();
+
+  // 1. ALWAYS handle API commands (very fast, non-blocking)
+  fetchCommandFromAPIAsync(); // or processAPICommands() if using FreeRTOS
+  
+  // 2. Wall avoidance has priority
   int frontDist = getDistance();
   if (wallAvoiderActive && !avoidingObstacle && 
       frontDist > 0 && frontDist < avoidRange) {
     handleObstacle(avoidRange);
   }
   
-  // 2. Line following runs when active and not avoiding
+  // 3. Line following runs when active and not avoiding
   else if (lineFollowerActive && !avoidingObstacle) {
     int pattern = readSensors();
     followLine(pattern);
+    
+    // Update display less frequently
+    if (millis() - lastSensorDisplay > sensorDisplayInterval) {
+      displayLCD(pattern);
+      lastSensorDisplay = millis();
+    }
   }
   
-  // 3. If only wall avoidance is active, move forward
+  // 4. If only wall avoidance is active, move forward
   else if (wallAvoiderActive && !avoidingObstacle) {
     handleForward();
   }
 
-  checkingConnection(); // Check Your Connection if the connection fail go to softAP instead.
-  
-  if (millis() - lastFetch > fetchInterval) {
-    fetchCommandFromAPI();
-    lastFetch = millis();
+  // 5. Less frequent WiFi checking
+  static unsigned long lastWiFiCheck = 0;
+  if (millis() - lastWiFiCheck > 10000) {
+    checkingConnectionOptimized();
+    lastWiFiCheck = millis();
   }
-
-  delay(10);
 }
 
 /*

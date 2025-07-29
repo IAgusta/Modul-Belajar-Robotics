@@ -59,7 +59,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 ==================== NET Handlers ======================
 */
 const char* url = "https://alpaca-labs.online"; // Website Url Change if the website domain changes
-const char* apiKey = "UzalZNU3vJ76NXXXXXXXXXXXXXXXX"; // Change this based on your API Key
+const char* apiKey = "XXXXXXXXXXXXXXXXXXXXXXXXX"; // Change this based on your API Key
 // Dont change this path url
 String getUrl = String(url) + "/api/robot/command/" + apiKey;
 String postUrl = String(url) + "/api/robot/command-status/" + apiKey;
@@ -80,10 +80,10 @@ bool softAPStarted = false;
 bool wasEverConnected = false;
 // Connection Settings, try to connect difference connection if the above is fail
 String ssidList[MAX_NETWORKS] = {
-  "YOUR_SSID"
+  "Add Your SSID Here"
 };
 String passwordList[MAX_NETWORKS] = {
-  "YOUR_PASSWORD"
+  "Your Password"
 };
 int ssidCount = 3;
 Preferences preferences;
@@ -119,9 +119,9 @@ int AVOIDANCE_DELAY = 1000;
 
 // Servo Adjustment
 Servo servo;
-int leftAngle = 0; // Angle for servo to left
+int leftAngle = 180; // Angle for servo to left
 int middleAngle = 90; // Angle for default Servo
-int rightAngle = 180; // Angle for servo to right
+int rightAngle = 0; // Angle for servo to right
 int currentAngle = 0;
 
 bool lineFollowerActive = false;   // default Black Line on White Space
@@ -155,19 +155,33 @@ uint8_t batteryIcon[8] = {
 };
 
 const float vRef = 3.3; // Adjust if using ADC calibration
-const float r1 = 100000.0; // 100k ohm
-const float r2 = 51000.0;  // 51k ohm
+const float r1 = 90000.0; // 100k ohm
+const float r2 = 50000.0;  // 51k ohm
 unsigned long lastBatteryBlink = 0;
 bool isBatteryBlinking = false;
+const float adcCalibration = 1.225;
 
 float getBatteryVoltage() {
-  float adc = analogRead(voltagePin) * vRef / 4095.0;
-  return adc * ((r1 + r2) / r2);
+  // Take multiple readings for better accuracy
+  float adcSum = 0;
+  for (int i = 0; i < 10; i++) {
+    adcSum += analogRead(voltagePin);
+    delay(1);
+  }
+  float adcAverage = adcSum / 10.0;
+  
+  // Convert ADC reading to voltage
+  float adcVoltage = (adcAverage * vRef / 4095.0);
+  
+  // Calculate original voltage using voltage divider formula
+  float originalVoltage = adcVoltage * ((r1 + r2) / r2) * adcCalibration;
+  
+  return originalVoltage;
 }
 
 int estimateBatteryPercent(float voltage) {
-  float minVoltage = 6.0; // 3~3.2V per cell (2S)
-  float maxVoltage = 8.0; // 4~4.2V per cell (2S)
+  float minVoltage = 6.2; // 3~3.2V per cell (2S)
+  float maxVoltage = 8.2; // 4~4.2V per cell (2S)
 
   if (voltage <= minVoltage) return 0;
   if (voltage >= maxVoltage) return 100;
@@ -222,6 +236,12 @@ bool audioPlaying = false;
 unsigned long audioStartTime = 0;
 const unsigned long MAX_AUDIO_DURATION = 2000; // Max 2 seconds per audio
 String lastDirection = "";
+
+bool proximityAlertActive = false;
+unsigned long lastProximityAlert = 0;
+const unsigned long PROXIMITY_ALERT_COOLDOWN = 3000; // 3 seconds between alerts
+const int PROXIMITY_THRESHOLD = 3; // 3cm threshold
+bool wasCloseLastCheck = false;
 
 int playKiri() {
   int track = random(9, 10);
@@ -286,6 +306,15 @@ void playReboot()         { playSFX("Reboot", 27); }
 void playYeehaw()         { playSFX("Yeehaw", 28); }
 void playYouAreGreat()    { playSFX("You Are Great", 29); }
 
+bool isRobotMoving() {
+  // Check if any motor is active by reading the enable pins
+  int motor1Speed = ledcRead(enable1Pin);
+  int motor2Speed = ledcRead(enable2Pin);
+  
+  // Robot is moving if either motor has speed > 0
+  return (motor1Speed > 0 || motor2Speed > 0);
+}
+
 void queueDirectionAudio(const String& label, int track) {
   // If same direction, don't queue new audio
   if (label == lastDirection && audioPlaying) {
@@ -297,36 +326,6 @@ void queueDirectionAudio(const String& label, int track) {
   pendingAudio.track = track;
   pendingAudio.timestamp = millis();
   lastDirection = label;
-}
-
-void manageAsyncAudio() {
-  unsigned long now = millis();
-  
-  // Check if we have pending audio
-  if (pendingAudio.label != "None") {
-    // If no audio playing, or different direction, start new audio
-    if (!audioPlaying || pendingAudio.label != currentAudio.label) {
-      // Start new audio
-      DFPlayer.play(pendingAudio.track);
-      currentAudio = pendingAudio;
-      audioPlaying = true;
-      audioStartTime = now;
-      
-      // Update OLED
-      oledAudio = currentAudio.label + " (" + String(currentAudio.track) + ")";
-      updateOLEDStatus();
-    }
-    
-    // Clear pending
-    pendingAudio = {"None", 0, 0};
-  }
-  
-  // Check if current audio should timeout (safety mechanism)
-  if (audioPlaying && (now - audioStartTime > MAX_AUDIO_DURATION)) {
-    audioPlaying = false;
-    currentAudio = {"None", 0, 0};
-    lastDirection = "";
-  }
 }
 
 // Direction Play main SFX with random track
@@ -344,12 +343,46 @@ void playSFX(const String& label, int track) {
   playSFX(label, track, track);
 }
 
+
+// Add these global variables for non-blocking LCD
+struct LCDMessage {
+  String line1;
+  String line2;
+  unsigned long startTime;
+  unsigned long duration;
+  bool active;
+};
+
+LCDMessage currentLCDMessage = {"", "", 0, 0, false};
+
 void showLCDMessage(const String &l1, const String &l2, int duration = 2000) {
-  lcd.clear(); lcd.setCursor(0, 0); lcd.print(l1.substring(0, 16));
-  lcd.setCursor(0, 1); lcd.print(l2.substring(0, 16));
-  delay(duration);
-  lcd.clear(); lcd.setCursor(0, 0); lcd.print("Status: OK");
-  lcd.setCursor(0, 1); lcd.print("Waiting...");
+  lcd.clear(); 
+  lcd.setCursor(0, 0); 
+  lcd.print(l1.substring(0, 16));
+  lcd.setCursor(0, 1); 
+  lcd.print(l2.substring(0, 16));
+  
+  // Set up the timer for clearing
+  currentLCDMessage.line1 = l1;
+  currentLCDMessage.line2 = l2;
+  currentLCDMessage.startTime = millis();
+  currentLCDMessage.duration = duration;
+  currentLCDMessage.active = true;
+}
+
+void manageLCDMessages() {
+  if (currentLCDMessage.active) {
+    if (millis() - currentLCDMessage.startTime >= currentLCDMessage.duration) {
+      // Time to clear the message
+      lcd.clear(); 
+      lcd.setCursor(0, 0); 
+      lcd.print("Status: OK");
+      lcd.setCursor(0, 1); 
+      lcd.print("Waiting...");
+      
+      currentLCDMessage.active = false;
+    }
+  }
 }
 
 void setColor(bool red, bool green, bool blue) {
@@ -362,17 +395,17 @@ void setColor(bool red, bool green, bool blue) {
 int readSensors() {
   int bits = 0;
   if (reverseLine){
-    bits |= (digitalRead(irLeft2))  << 4;   // bit4
-    bits |= (digitalRead(irLeft1))  << 3;   // bit3
-    bits |= (digitalRead(irCenter)) << 2;   // bit2
-    bits |= (digitalRead(irRight1)) << 1;   // bit1
-    bits |= (digitalRead(irRight2));        // bit0
-  } else {
     bits |= (!digitalRead(irLeft2))  << 4;   // bit4
     bits |= (!digitalRead(irLeft1))  << 3;   // bit3
     bits |= (!digitalRead(irCenter)) << 2;   // bit2
     bits |= (!digitalRead(irRight1)) << 1;   // bit1
     bits |= (!digitalRead(irRight2));        // bit0
+  } if (!reverseLine) {
+    bits |= (digitalRead(irLeft2))  << 4;   // bit4
+    bits |= (digitalRead(irLeft1))  << 3;   // bit3
+    bits |= (digitalRead(irCenter)) << 2;   // bit2
+    bits |= (digitalRead(irRight1)) << 1;   // bit1
+    bits |= (digitalRead(irRight2));        // bit0
   }
   return bits;                             // 0bxxxxx  (5 bits)
 }
@@ -506,9 +539,18 @@ UltrasonicState ultrasonicState = ULTRASONIC_IDLE;
 unsigned long triggerTime = 0;
 unsigned long echoStartTime = 0;
 int lastDistance = -1;
+unsigned long lastMeasurementTime = 0;
+const unsigned long MIN_MEASUREMENT_INTERVAL = 50; // Minimum 50ms between measurements
 
-// Function to calculate distance
+// IMPROVED: Fixed getDistance() with proper timing and error handling
 int getDistance() {
+  unsigned long now = millis();
+  
+  // Don't measure too frequently - ultrasonic needs recovery time
+  if (now - lastMeasurementTime < MIN_MEASUREMENT_INTERVAL) {
+    return lastDistance;
+  }
+  
   switch (ultrasonicState) {
     case ULTRASONIC_IDLE:
       // Start measurement
@@ -519,17 +561,18 @@ int getDistance() {
       digitalWrite(TrigPin, LOW);
       triggerTime = millis();
       ultrasonicState = ULTRASONIC_TRIGGERED;
-      return lastDistance; // Return previous value
+      return lastDistance;
       
     case ULTRASONIC_TRIGGERED:
-      // Wait for echo to start
+      // Wait for echo to start (but not forever)
       if (digitalRead(EchoPin) == HIGH) {
         echoStartTime = micros();
         ultrasonicState = ULTRASONIC_MEASURING;
-      } else if (millis() - triggerTime > 30) {
-        // Timeout - no echo received
+      } else if (millis() - triggerTime > 50) { // Reduced timeout
+        // Timeout - reset and try again
         ultrasonicState = ULTRASONIC_IDLE;
-        lastDistance = -1;
+        lastMeasurementTime = millis();
+        return -1; // Invalid reading
       }
       return lastDistance;
       
@@ -537,11 +580,21 @@ int getDistance() {
       // Wait for echo to end
       if (digitalRead(EchoPin) == LOW) {
         unsigned long duration = micros() - echoStartTime;
-        lastDistance = duration * 0.034 / 2;
+        int distance = duration * 0.034 / 2;
+        
+        // Validate reading - filter out obviously wrong values
+        if (distance > 2 && distance < 400) { // Valid range 2-400cm
+          lastDistance = distance;
+        } else {
+          lastDistance = -1; // Invalid reading
+        }
+        
         ultrasonicState = ULTRASONIC_IDLE;
-      } else if (micros() - echoStartTime > 30000) {
+        lastMeasurementTime = millis();
+      } else if (micros() - echoStartTime > 25000) { // Reduced timeout
         // Timeout - echo too long
         ultrasonicState = ULTRASONIC_IDLE;
+        lastMeasurementTime = millis();
         lastDistance = -1;
       }
       return lastDistance;
@@ -549,69 +602,350 @@ int getDistance() {
   return lastDistance;
 }
 
+unsigned long lastObstacleTime = 0;
+const unsigned long OBSTACLE_COOLDOWN = 2000; // Reduced from 3000
+unsigned long lastValidDistanceTime = 0;
+int stableDistance = -1;
+int obstacleDetectionCount = 0;
+const int REQUIRED_DETECTIONS = 3; // Reduced from 5 for faster response
+const unsigned long DETECTION_WINDOW = 300; // Reduced from 500ms
+unsigned long firstDetectionTime = 0;
+
+// Add moving average filter to reduce noise
+#define FILTER_SIZE 5
+int distanceHistory[FILTER_SIZE];
+int historyIndex = 0;
+bool historyFull = false;
+
+int getFilteredDistance() {
+  int rawDistance = getDistance();
+  
+  if (rawDistance <= 0 || rawDistance > 400) {
+    return -1; // Invalid reading
+  }
+
+  // Add to circular buffer
+  distanceHistory[historyIndex] = rawDistance;
+  historyIndex = (historyIndex + 1) % FILTER_SIZE;
+  
+  // Calculate median (better than average for outliers)
+  int sorted[FILTER_SIZE];
+  memcpy(sorted, distanceHistory, sizeof(sorted));
+  std::sort(sorted, sorted + FILTER_SIZE);
+  
+  return sorted[FILTER_SIZE/2]; // Return median
+}
+
+void resetUltrasonicSensor() {
+  // Force sensor state to idle
+  ultrasonicState = ULTRASONIC_IDLE;
+  lastDistance = -1;
+  lastMeasurementTime = millis();
+  
+  // Clear detection history
+  obstacleDetectionCount = 0;
+  firstDetectionTime = 0;
+  
+  // Clear distance filter history
+  for (int i = 0; i < FILTER_SIZE; i++) {
+    distanceHistory[i] = 0;
+  }
+  historyIndex = 0;
+  historyFull = false;
+  
+  // Reset timing variables
+  lastValidDistanceTime = millis();
+  stableDistance = -1;
+}
+
+void completeObstacleAvoidanceReset() {
+  // Complete reset after obstacle avoidance
+  resetUltrasonicSensor();
+  
+  // Set longer cooldown to prevent immediate re-detection
+  lastObstacleTime = millis();
+  
+  // Force several clear readings to ensure sensor is working properly
+  int clearReadings = 0;
+  unsigned long resetStart = millis();
+  
+  while (clearReadings < 3 && (millis() - resetStart < 3000)) {
+    delay(100);
+    int dist = blockingGetDistance();
+    
+    if (dist > avoidRange + 5) { // Must be clearly beyond avoid range
+      clearReadings++;
+    } else if (dist > 0 && dist <= avoidRange) {
+      // Still detecting obstacle - reset counter
+      clearReadings = 0;
+    }
+    
+    // Show progress on LCD
+    lcd.setCursor(0, 1);
+    lcd.print("Reset: ");
+    lcd.print(clearReadings);
+    lcd.print("/3");
+  }
+  
+  if (clearReadings < 3) {
+    // Couldn't get clear readings - extend cooldown
+    lastObstacleTime = millis() + 2000; // Extra 2 seconds
+    
+    lcd.setCursor(0, 1);
+    lcd.print("Sensor Issue");
+    delay(1000);
+  }
+}
+
+bool isObstacleDetected(int avoidRange) {
+  // Skip detection if in cooldown period
+  if (millis() - lastObstacleTime < OBSTACLE_COOLDOWN) {
+    return false;
+  }
+
+  int currentDistance = getFilteredDistance();
+  
+  // Only process valid readings
+  if (currentDistance <= 0 || currentDistance > 300) {
+    return false;
+  }
+
+  // Hysteresis for more stable detection
+  static bool wasDetecting = false;
+  int detectThreshold = avoidRange;
+  int clearThreshold = avoidRange + 5; // 5cm hysteresis
+
+  if (!wasDetecting && currentDistance < detectThreshold) {
+    wasDetecting = true;
+    return true;
+  } else if (wasDetecting && currentDistance > clearThreshold) {
+    wasDetecting = false;
+  }
+  
+  return false;
+}
+
 // For Checking Wall on Right or Left (why not use getDistance? because it have debounce time for make it return value -1)
 int blockingGetDistance() {
+  // Clear any pending state first
+  ultrasonicState = ULTRASONIC_IDLE;
+  
   digitalWrite(TrigPin, LOW);
-  delayMicroseconds(2);
+  delayMicroseconds(5); // Increased clear time
   digitalWrite(TrigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(TrigPin, LOW);
 
-  unsigned long duration = pulseIn(EchoPin, HIGH, 30000); // 30 ms timeout
-  return (duration > 0) ? duration * 0.034 / 2 : -1;
+  unsigned long duration = pulseIn(EchoPin, HIGH, 30000);
+  
+  if (duration > 0) {
+    int distance = duration * 0.034 / 2;
+    return (distance > 2 && distance < 400) ? distance : -1;
+  }
+  
+  return -1;
+}
+
+int getAverageDistance(int numReadings = 3) {
+  int readings[numReadings];
+  int validCount = 0;
+  
+  // Collect readings
+  for (int i = 0; i < numReadings; i++) {
+    int reading = blockingGetDistance();
+    if (reading > 0) {
+      readings[validCount] = reading;
+      validCount++;
+    }
+    delay(60); // Increased delay between readings
+  }
+  
+  if (validCount == 0) return -1;
+  if (validCount == 1) return readings[0];
+  
+  // Simple outlier rejection - remove readings that differ too much from median
+  // Sort readings
+  for (int i = 0; i < validCount - 1; i++) {
+    for (int j = i + 1; j < validCount; j++) {
+      if (readings[i] > readings[j]) {
+        int temp = readings[i];
+        readings[i] = readings[j];
+        readings[j] = temp;
+      }
+    }
+  }
+  
+  // Use median and nearby values
+  int median = readings[validCount / 2];
+  int sum = 0;
+  int count = 0;
+  
+  for (int i = 0; i < validCount; i++) {
+    if (abs(readings[i] - median) < 10) { // Within 10cm of median
+      sum += readings[i];
+      count++;
+    }
+  }
+  
+  return count > 0 ? sum / count : median;
 }
 
 void handleObstacle(int avoidRange) {
   if (!wallAvoiderActive) return;
+
+  int centerDist = blockingGetDistance();
+  if (centerDist > avoidRange + 10) { // 10cm buffer
+    return; // No obstacle in front
+  }
   
   handleStop();
-
   avoidingObstacle = true;
-  servo.attach(servoPin);
   
-  // --- SCAN LEFT ---
-  servo.write(leftAngle);
-  delay(500);
-  int leftDist = blockingGetDistance();
-  delay(200);
-  // --- SCAN RIGHT ---
-  servo.write(rightAngle);
-  delay(500);
-  int rightDist = blockingGetDistance();
+  if (!lineFollowerActive) {
+    // Original obstacle avoidance for non-line following mode
+    servo.attach(servoPin);    
+    // --- SCAN LEFT ---
+    servo.write(leftAngle);
+    delay(500);
+    int leftDist = getAverageDistance(3);
+    delay(100);
+    
+    // --- SCAN RIGHT ---
+    servo.write(rightAngle);
+    delay(500);
+    int rightDist = getAverageDistance(3);
+    delay(100);
 
-  // --- RETURN TO CENTER ---
-  servo.write(middleAngle);
-  delay(300);
-  servo.detach();
+    // --- RETURN TO CENTER ---
+    servo.write(middleAngle);
+    delay(300);
+    servo.detach();
 
-  // Show distances on LCD
-  lcd.clear();
-  lcd.print("L:");
-  lcd.print(leftDist);
-  lcd.print(" R:");
-  lcd.print(rightDist);
+    // Show distances on LCD
+    lcd.clear();
+    lcd.print("L:");
+    lcd.print(leftDist);
+    lcd.print(" R:");
+    lcd.print(rightDist);
 
-  // ---- AVOIDANCE MANEUVER ----
-  if (leftDist > rightDist) {
-    avoidLeft(lineFollowerActive);
-    lcd.setCursor(0, 1); lcd.print(F("Belok Kiri"));
+    // ---- AVOIDANCE MANEUVER ----
+    if (leftDist > rightDist) {
+      avoidLeft();
+      lcd.setCursor(0, 1); lcd.print(F("Belok Kiri"));
+    } else {
+      avoidRight();
+      lcd.setCursor(0, 1); lcd.print(F("Belok Kanan"));
+    }
   } else {
-    avoidRight(lineFollowerActive);
-    lcd.setCursor(0, 1); lcd.print(F("Belok Kanan"));
+    // Wall following mode when line following is active
+    LineWall();
   }
+  obstacleDetectionCount = 0;
+  firstDetectionTime = 0;
   
   avoidingObstacle = false;
+
+  resetUltrasonicSensor();
+  lastObstacleTime = millis(); 
 }
 
-void avoidLeft(bool findLine) {
-  // Back up slightly
+void LineWall(){
+  lcd.clear();
+  lcd.print("Wall Avoid");
+  lcd.setCursor(0, 1);
+  lcd.print("Line Mode");
+
+  // Step 1: Back up slightly
   handleReverse();
   delay(500);
-  
-  if (!findLine) {
-    int track = -1;
-    track = playSFX("Left", 9, 10);
+  handleStop();
+  delay(300);
+
+  // Turn left
+  digitalWrite(motor1Pin1, LOW);
+  digitalWrite(motor1Pin2, LOW);
+  digitalWrite(motor2Pin1, LOW);
+  digitalWrite(motor2Pin2, HIGH);
+  ledcWrite(enable1Pin, 200);
+  ledcWrite(enable2Pin, 200);
+  delay(300);
+
+  handleForward();
+  delay(2000);
+
+  handleStop();
+  delay(300);
+
+  // Turn left
+  digitalWrite(motor1Pin1, LOW);
+  digitalWrite(motor1Pin2, HIGH);
+  digitalWrite(motor2Pin1, LOW);
+  digitalWrite(motor2Pin2, LOW);
+  ledcWrite(enable1Pin, 200);
+  ledcWrite(enable2Pin, 200);
+  delay(300);
+
+    // Reset control values
+  lastError = 0;
+  prevError = 0;
+  integral = 0;
+  lostStart = 0;
+
+  // Forward search
+  bool lineFound = false;
+  unsigned long searchStart = millis();
+  while (millis() - searchStart < 4000 && !lineFound) {
+    int pattern = readSensors();
+    if (pattern != 0b00000) {
+      lineFound = true;
+      handleStop();
+      delay(300);
+      lcd.clear();
+      lcd.print("Line Found!");
+      delay(1000);
+      break;
+    }
+    handleForward();
+    delay(50);
   }
+}
+
+void avoidLeft() {
+  // Back up slightly
+  handleReverse();
+  delay(300);
+  
+  int track = -1;
+  track = playSFX("Left", 9, 10);
+
+  // Wait a bit
+  handleStop();
+  delay(300);
+
+  TurnLeft();
+
+  handleStop();
+  delay(300);
+}
+
+void avoidRight() {
+  // Back up slightly
+  handleReverse();
+  delay(300);
+  
+  int track = -1;
+  track = playSFX("Right", 11, 12);
+  
+  // Wait a bit
+  handleStop();
+  delay(300);
+
+  TurnRight();
+  handleStop();
+  delay(300);
+}
+
+void TurnLeft(){
   // Turn left
   digitalWrite(motor1Pin1, LOW);
   digitalWrite(motor1Pin2, LOW);
@@ -620,44 +954,9 @@ void avoidLeft(bool findLine) {
   ledcWrite(enable1Pin, 200);
   ledcWrite(enable2Pin, 200);
   delay(AVOIDANCE_DELAY);
-  // Wait A bit
-  handleStop();
-  delay(300);
-  // Move forward
-  handleForward();
-  delay(AVOIDANCE_DELAY * 1.5);
-  
-  // Back And Try to find line if in line following mode
-  if (findLine) {
-    // Turn right
-    digitalWrite(motor1Pin1, LOW);
-    digitalWrite(motor1Pin2, HIGH);
-    digitalWrite(motor2Pin1, LOW);
-    digitalWrite(motor2Pin2, LOW);
-    ledcWrite(enable1Pin, 200);
-    ledcWrite(enable2Pin, 200);
-    delay(AVOIDANCE_DELAY);
-
-    unsigned long start = millis();
-    while (millis() - start < 3000) {
-      int pattern = readSensors();
-      if (pattern != 0b00000) break;
-      handleForward();
-    }
-
-    handleStop();
-  }
 }
 
-void avoidRight(bool findLine) {
-  // Back up slightly
-  handleReverse();
-  delay(500);
-  
-  if (!findLine) {
-    int track = -1;
-    track = playSFX("Right", 11, 12);
-  }
+void TurnRight(){
   // Turn right
   digitalWrite(motor1Pin1, LOW);
   digitalWrite(motor1Pin2, HIGH);
@@ -666,33 +965,6 @@ void avoidRight(bool findLine) {
   ledcWrite(enable1Pin, 200);
   ledcWrite(enable2Pin, 200);
   delay(AVOIDANCE_DELAY);
-  // Wait A bit
-  handleStop();
-  delay(300);
-  // Move forward
-  handleForward();
-  delay(AVOIDANCE_DELAY * 1.5);
-  
-  // Back Try to find line if in line following mode
-  if (findLine) {
-    // Turn left
-    digitalWrite(motor1Pin1, LOW);
-    digitalWrite(motor1Pin2, LOW);
-    digitalWrite(motor2Pin1, LOW);
-    digitalWrite(motor2Pin2, HIGH);
-    ledcWrite(enable1Pin, 200);
-    ledcWrite(enable2Pin, 200);
-    delay(AVOIDANCE_DELAY);
-
-    // Search Line
-    unsigned long start = millis();
-    while (millis() - start < 3000) {
-      int pattern = readSensors();
-      if (pattern != 0b00000) break;
-      handleForward();
-    }
-    handleStop();
-  }
 }
 
 void indicateWiFiStatus(bool connected, bool softAP) {
@@ -715,7 +987,7 @@ void indicateWiFiStatus(bool connected, bool softAP) {
 
 void checkingConnectionOptimized(){
   // Only check WiFi when not actively line following or much less frequently
-  if (lineFollowerActive) {
+  if (lineFollowerActive || wallAvoiderActive) {
     // Check much less frequently when line following (every 30 seconds)
     static unsigned long lastWiFiCheckLineMode = 0;
     if (millis() - lastWiFiCheckLineMode > 30000) {
@@ -867,7 +1139,7 @@ void proxyConnection(){
   // /move?dir=forward|backward|left|right|stop
   server.on("/move", HTTP_GET, [](AsyncWebServerRequest *request) {
     String dir = request->getParam("dir") ? request->getParam("dir")->value() : "stop";
-    moveRobotAsync(dir);
+    moveRobot(dir);
     oledCommand = dir;
     oledAudio = "Move" + dir;
     updateOLEDStatus();
@@ -1072,7 +1344,7 @@ void handleAPICommand(JsonObject command) {
 
   if (action == "forward" || action == "backward" || action == "reverse" || 
       action == "left" || action == "right" || action == "stop") {
-    moveRobotAsync(action); // existing function
+    moveRobot(action); // existing function
   }
 
   else if (action == "line") {
@@ -1143,7 +1415,6 @@ void moveRobot(String dir) {
     track = playSFX("Reverse", 15, 16);
     handleReverse();
   } else {
-    playSFX("Ugh", 19, 19);  // Just plays track 19
     handleStop();
     return;
   }
@@ -1322,21 +1593,28 @@ void setup() {
 }
 
 void loop() {
-  // 0. Manage async audio
+  // 0. Manage async audio and lcd
   manageAsyncAudio();
+  manageLCDMessages();
+  // checkProximityAlert();
 
   // 1. ALWAYS handle API commands (very fast, non-blocking)
-  fetchCommandFromAPIAsync(); // or processAPICommands() if using FreeRTOS
+  fetchCommandFromAPIAsync();
   
-  // 2. Wall avoidance has priority
-  int frontDist = getDistance();
-  if (wallAvoiderActive && !avoidingObstacle && 
-      frontDist > 0 && frontDist < avoidRange) {
-    handleObstacle(avoidRange);
+  // 2. WALL AVOIDANCE HAS HIGHEST PRIORITY - Check this FIRST
+  if (wallAvoiderActive && !avoidingObstacle) {
+    // Check cooldown period - don't detect obstacles too soon after last avoidance
+    if (millis() - lastObstacleTime > OBSTACLE_COOLDOWN) {
+      if (isObstacleDetected(avoidRange)) {
+        lastObstacleTime = millis(); // Set cooldown timer
+        handleObstacle(avoidRange);
+        return; // Exit after handling obstacle
+      }
+    }
   }
   
-  // 3. Line following runs when active and not avoiding
-  else if (lineFollowerActive && !avoidingObstacle) {
+  // 3. Line following - only if not avoiding obstacle
+  if (lineFollowerActive && !avoidingObstacle) {
     int pattern = readSensors();
     followLine(pattern);
     
@@ -1345,9 +1623,10 @@ void loop() {
       displayLCD(pattern);
       lastSensorDisplay = millis();
     }
+    return; // Exit after line following
   }
   
-  // 4. If only wall avoidance is active, move forward
+  // 4. If only wall avoidance is active (no line following), move forward
   else if (wallAvoiderActive && !avoidingObstacle) {
     handleForward();
   }
@@ -1505,4 +1784,90 @@ void initializeInfrared(){
   pinMode(irCenter, INPUT);
   pinMode(irRight1, INPUT);
   pinMode(irRight2, INPUT);
+}
+
+/*
+Other Functionality Just Ignore it if Doesnt Need it
+*/
+void manageAsyncAudio() {
+  unsigned long now = millis();
+  
+  // Check if we have pending audio
+  if (pendingAudio.label != "None") {
+    // If no audio playing, or different direction, start new audio
+    if (!audioPlaying || pendingAudio.label != currentAudio.label) {
+      // Start new audio
+      DFPlayer.play(pendingAudio.track);
+      currentAudio = pendingAudio;
+      audioPlaying = true;
+      audioStartTime = now;
+      
+      // Update OLED
+      oledAudio = currentAudio.label + " (" + String(currentAudio.track) + ")";
+      updateOLEDStatus();
+    }
+    
+    // Clear pending
+    pendingAudio = {"None", 0, 0};
+  }
+  
+  // Check if current audio should timeout (safety mechanism)
+  if (audioPlaying && (now - audioStartTime > MAX_AUDIO_DURATION)) {
+    audioPlaying = false;
+    currentAudio = {"None", 0, 0};
+    lastDirection = "";
+  }
+}
+
+// Main proximity alert function
+void checkProximityAlert() {
+  // Only check when NOT in wall avoidance mode and NOT in obstacle avoidance
+  if (wallAvoiderActive || avoidingObstacle) {
+    return;
+  }
+  
+  int frontDist = getDistance();
+  unsigned long now = millis();
+  
+  // Check if distance is valid and below threshold
+  if (frontDist > 0 && frontDist < PROXIMITY_THRESHOLD) {
+    // Only play sound if enough time has passed since last alert
+    if (now - lastProximityAlert > PROXIMITY_ALERT_COOLDOWN) {
+      
+      if (isRobotMoving()) {
+        // Robot is moving - play movement collision sounds
+        int randomChoice = random(0, 2); // 0 or 1
+        if (randomChoice == 0) {
+          playOuch();
+        } else {
+          playDramaticOuch();
+        }
+        
+        // Optional: Show warning on LCD
+        showLCDMessage("WARNING!", "Too Close!", 1500);
+        
+      } else {
+        // Robot is stopped - play stationary warning
+        playUgh();
+        
+        // Optional: Show different message for stationary
+        showLCDMessage("OBSTACLE!", "Very Close", 1500);
+      }
+      
+      lastProximityAlert = now;
+      wasCloseLastCheck = true;
+      
+      // // Optional: Flash red LED for visual warning
+      // setColor(true, false, false); // Red warning
+      // delay(100); // Brief flash
+      // setColor(false, false, false); // Turn off (or return to normal state)
+    }
+  } else {
+    // Reset the close detection flag when object moves away
+    if (wasCloseLastCheck && frontDist >= PROXIMITY_THRESHOLD + 2) { // Add 2cm hysteresis
+      wasCloseLastCheck = false;
+      // Optional: Play "clear" sound or show "clear" message
+      showLCDMessage("Path Clear", "", 1000);
+    }
+  }
 }
